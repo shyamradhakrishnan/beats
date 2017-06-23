@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/elastic/beats/filebeat/harvester/encoding"
+	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/common/match"
 	"github.com/stretchr/testify/assert"
 )
@@ -130,6 +133,178 @@ func TestMultilineBeforeNegateOKWithEmptyLine(t *testing.T) {
 	)
 }
 
+func TestDefaultKubeProviderConfig(t *testing.T) {
+	config := MultilineConfig{
+		Negate: true,
+		Match:  "after",
+	}
+	defaultConfig := defaultKubernetesConfig()
+	kubeConfig := config.Kubernetes
+	if kubeConfig == nil {
+		kubeConfig = common.NewConfig()
+	}
+	err := kubeConfig.Unpack(&defaultConfig)
+	assert.NoError(t, err, "Error occured while creating multi-line config")
+
+	assert.Equal(t, true, defaultConfig.InCluster,
+		"The default value of InCluster must be true")
+	assert.Equal(t, "filebeat.multiline.pattern", defaultConfig.PatternAnnotation,
+		"The default value of pattern did not match")
+	assert.Equal(t, "filebeat.multiline.negate", defaultConfig.NegateAnnotation,
+		"The default value of negate did not match")
+	assert.Equal(t, "filebeat.multiline.matcher", defaultConfig.MatcherAnnotation,
+		"The default value of matcher did not match")
+}
+
+func TestDefaultDockerProviderConfig(t *testing.T) {
+	config := MultilineConfig{
+		Negate: true,
+		Match:  "after",
+	}
+	defaultConfig := defaultDockerConfig()
+	dockerConfig := config.Docker
+	if dockerConfig == nil {
+		dockerConfig = common.NewConfig()
+	}
+	err := dockerConfig.Unpack(&defaultConfig)
+	assert.NoError(t, err, "Error occured while creating multi-line config")
+
+	assert.Equal(t, "unix:///var/run/docker.sock", defaultConfig.Host,
+		"The default value of InCluster must be true")
+	assert.Equal(t, "filebeat.multiline.pattern", defaultConfig.PatternLabel,
+		"The default value of pattern did not match")
+	assert.Equal(t, "filebeat.multiline.negate", defaultConfig.NegateLabel,
+		"The default value of negate did not match")
+	assert.Equal(t, "filebeat.multiline.matcher", defaultConfig.MatcherLabel,
+		"The default value of matcher did not match")
+}
+
+func TestInvalidProvider(t *testing.T) {
+	config := MultilineConfig{
+		Provider: "Invalid",
+	}
+	_, err := instantiateProvider(&config, "")
+	assert.Error(t, err, "Error occured while creating multi-line config")
+}
+
+func TestDefaultProvider(t *testing.T) {
+	pattern := match.MustCompile(`;$`)
+	config := MultilineConfig{
+		Pattern: &pattern,
+		Negate:  true,
+		Match:   "before",
+	}
+	provider, err := instantiateProvider(&config, "")
+	assert.NoError(t, err, "Since no provider was defined, the default should be user")
+	assert.Equal(t, true, provider.negate,
+		"Wrong value for negate from default provider")
+	assert.Equal(t, "before", provider.match,
+		"Wrong value for match from default provider")
+	assert.Equal(t, pattern, provider.pattern,
+		"Wrong value for pattern from default provider")
+
+}
+
+func TestDockerProviderFromSource(t *testing.T) {
+	getContainerJsonFromContainerId = func(dockerConfig *DockerConfig, cid string) (*types.ContainerJSON, error) {
+		return  &types.ContainerJSON{
+			Config:&container.Config{
+				Labels:map[string]string{
+					"filebeat.multiline.pattern": "pattern",
+					"filebeat.multiline.negate": "true",
+					"filebeat.multiline.match": "after",
+				},
+			},
+		}, nil
+	}
+	config := MultilineConfig{
+		Provider: "Docker",
+	}
+
+	source := "/var/lib/docker/containers/bfd50dda2b75462da051e969b1700867837fc2866873ad4aea24973d75fba875/json.log"
+	provider, err := createDockerProvider(&config, source)
+
+	assert.NoError(t, err, "The docker container json was not retrieved successfully")
+
+	assert.Equal(t, true, provider.negate,
+		"Wrong value for negate from container label")
+	assert.Equal(t, "after", provider.match,
+		"Wrong value for match from  container label")
+	assert.Equal(t,  match.MustCompile("pattern"), provider.pattern,
+		"Wrong value for pattern from  container label")
+}
+
+func TestReturnErrorIfSourceCouldNotBeMatched(t *testing.T) {
+	getContainerJsonFromContainerId = func(dockerConfig *DockerConfig, cid string) (*types.ContainerJSON, error) {
+		return  &types.ContainerJSON{}, nil
+	}
+	config := MultilineConfig{
+		Provider: "Docker",
+	}
+
+	source := "/containers/bfd50dda2b75462da051e969b1700867837fc2866873ad4aea24973d75fba875/json.log"
+	_, err := createDockerProvider(&config, source)
+
+	assert.Error(t, err, "The docker container id could not be parsed from source")
+}
+
+func TestReturnDefaultMultilinePatternOnMissingInfo(t *testing.T) {
+	getContainerJsonFromContainerId = func(dockerConfig *DockerConfig, cid string) (*types.ContainerJSON, error) {
+		return  &types.ContainerJSON{
+			Config:&container.Config{
+				Labels:map[string]string{
+					"filebeat.multiline.pattern": "pattern",
+				},
+			},
+		}, nil
+	}
+	multilineConfig := MultilineConfig{
+		Provider: "Docker",
+	}
+	source := "/var/lib/docker/containers/bfd50dda2b75462da051e969b1700867837fc2866873ad4aea24973d75fba875/json.log"
+	provider, err := createDockerProvider(&multilineConfig, source)
+
+	assert.NoError(t, err, "If metadata is missing, default patterns must be used")
+
+	assert.Equal(t,  match.MustCompile("^[.*]"), provider.pattern,
+		"The default pattern was not returned")
+}
+
+func TestKubernetesProviderFromSource(t *testing.T) {
+	getContainerJsonFromContainerId = func(dockerConfig *DockerConfig, cid string) (*types.ContainerJSON, error) {
+		return  &types.ContainerJSON{
+			Config:&container.Config{
+				Labels:map[string]string{
+					"io.kubernetes.pod.name": "podname",
+					"io.kubernetes.pod.namespace": "namespace",
+				},
+			},
+		}, nil
+	}
+	getKubernetesPod = func(kubernetesConfig KubernetesConfig, podName string, podNameSpace string) (map[string]string, error) {
+		return map[string]string{
+			"filebeat.multiline.pattern": "pattern",
+			"filebeat.multiline.negate": "true",
+			"filebeat.multiline.match": "after",
+		}, nil
+	}
+	config := MultilineConfig{
+		Provider: "Kubernetes",
+	}
+
+	source := "/var/lib/docker/containers/bfd50dda2b75462da051e969b1700867837fc2866873ad4aea24973d75fba875/json.log"
+	provider, err := createKubernetesProvider(&config, source)
+
+	assert.NoError(t, err, "The docker container json was not retrieved successfully")
+
+	assert.Equal(t, true, provider.negate,
+		"Wrong value for negate from container label")
+	assert.Equal(t, "after", provider.match,
+		"Wrong value for match from  container label")
+	assert.Equal(t,  match.MustCompile("pattern"), provider.pattern,
+		"Wrong value for pattern from  container label")
+}
+
 func testMultilineOK(t *testing.T, cfg MultilineConfig, events int, expected ...string) {
 	_, buf := createLineBuffer(expected...)
 	reader := createMultilineTestReader(t, buf, cfg)
@@ -174,7 +349,7 @@ func createMultilineTestReader(t *testing.T, in *bytes.Buffer, cfg MultilineConf
 		t.Fatalf("Failed to initialize line reader: %v", err)
 	}
 
-	reader, err = NewMultiline(NewStripNewline(reader), "\n", 1<<20, &cfg)
+	reader, err = NewMultiline(NewStripNewline(reader), "\n", 1<<20, &cfg, "")
 	if err != nil {
 		t.Fatalf("failed to initializ reader: %v", err)
 	}

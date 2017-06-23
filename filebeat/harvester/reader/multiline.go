@@ -57,25 +57,34 @@ func NewMultiline(
 	separator string,
 	maxBytes int,
 	config *MultilineConfig,
+	source string,
 ) (*Multiline, error) {
+
+
+	provider, err := instantiateProvider(config, source)
+
+	if err != nil {
+		return nil, err
+	}
+
 	types := map[string]func(match.Matcher) (matcher, error){
 		"before": beforeMatcher,
 		"after":  afterMatcher,
 	}
 
-	matcherType, ok := types[config.Match]
+	matcherType, ok := types[provider.match]
 	if !ok {
 		return nil, fmt.Errorf("unknown matcher type: %s", config.Match)
 	}
 
-	matcher, err := matcherType(*config.Pattern)
+	matcher, err := matcherType(provider.pattern)
 	if err != nil {
 		return nil, err
 	}
 
 	flushMatcher := config.FlushPattern
 
-	if config.Negate {
+	if provider.negate {
 		matcher = negatedMatcher(matcher)
 	}
 

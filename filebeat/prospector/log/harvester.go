@@ -507,7 +507,7 @@ func (h *Harvester) newLogFileReader() (reader.Reader, error) {
 	r = reader.NewStripNewline(r)
 
 	if h.config.Multiline != nil {
-		r, err = reader.NewMultiline(r, "\n", h.config.MaxBytes, h.config.Multiline)
+		r, err = reader.NewMultiline(r, "\n", h.config.MaxBytes, h.config.Multiline, h.state.Source)
 		if err != nil {
 			return nil, err
 		}
